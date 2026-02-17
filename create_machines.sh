@@ -21,16 +21,15 @@ TEMPLATE="/var/lib/machines/.template"
 # Base packages for demo machines (curl included)
 BASE_PKGS=(
   openssh-server
+  locales
   curl ca-certificates wget
+  gnupg
   git jq
   unzip zip tar
   vim-tiny less
   procps iproute2 iputils-ping dnsutils
   netcat-openbsd
   lsof
-
-  # Node runtime (Ubuntu 24 native)
-  nodejs npm
 
   # Native build tooling (npm modules)
   build-essential
@@ -119,6 +118,18 @@ EOF
 
   # Boot template as a temporary machine to install packages once
   TMP="template-build"
+  TMP_DIR="/var/lib/machines/${TMP}"
+
+  # machinectl start <name> expects /var/lib/machines/<name> to exist.
+  # Reuse the template rootfs via a temporary symlinked image name.
+  if [[ -e "$TMP_DIR" && ! -L "$TMP_DIR" ]]; then
+    echo "Temporary machine path exists and is not a symlink: $TMP_DIR"
+    echo "Remove it (or rename it) and rerun."
+    exit 1
+  fi
+  machinectl stop "$TMP" >/dev/null 2>&1 || true
+  ln -sfn "$TEMPLATE" "$TMP_DIR"
+
   mkdir -p /etc/systemd/nspawn
   cat > "/etc/systemd/nspawn/${TMP}.nspawn" <<EOF
 [Exec]
@@ -135,15 +146,52 @@ EOF
   PID="$(machinectl show "$TMP" -p Leader --value)"
   nsenter -t "$PID" -m -u -i -n -p /bin/bash <<INCHROOT
 set -euo pipefail
+export LANG=C
+export LC_ALL=C
 apt update
 DEBIAN_FRONTEND=noninteractive apt install -y ${BASE_PKGS[*]}
+
+# Install Node.js 22+ in the template so demo machines don't upgrade on first OpenClaw install.
+NODE_MAJOR="\$(node -v 2>/dev/null | sed -E 's/^v([0-9]+).*/\1/' || true)"
+[[ "\$NODE_MAJOR" =~ ^[0-9]+$ ]] || NODE_MAJOR=0
+if [[ "\$NODE_MAJOR" -lt 22 ]]; then
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+    | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+  chmod a+r /etc/apt/keyrings/nodesource.gpg
+  echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
+    > /etc/apt/sources.list.d/nodesource.list
+  apt update
+  DEBIAN_FRONTEND=noninteractive apt install -y nodejs
+fi
+
+NODE_MAJOR="\$(node -v 2>/dev/null | sed -E 's/^v([0-9]+).*/\1/' || true)"
+[[ "\$NODE_MAJOR" =~ ^[0-9]+$ ]] || NODE_MAJOR=0
+if [[ "\$NODE_MAJOR" -lt 22 ]]; then
+  echo "Node.js 22+ install failed (found: \$(node -v 2>/dev/null || echo missing))."
+  exit 1
+fi
+
+if command -v locale-gen >/dev/null 2>&1; then
+  grep -qx 'en_US.UTF-8 UTF-8' /etc/locale.gen || echo 'en_US.UTF-8 UTF-8' >> /etc/locale.gen
+  grep -qx 'en_IN.UTF-8 UTF-8' /etc/locale.gen || echo 'en_IN.UTF-8 UTF-8' >> /etc/locale.gen
+  locale-gen en_US.UTF-8 en_IN.UTF-8 || locale-gen || true
+fi
+if command -v localedef >/dev/null 2>&1; then
+  localedef -i en_US -f UTF-8 en_US.UTF-8 || true
+  localedef -i en_IN -f UTF-8 en_IN.UTF-8 || true
+fi
+update-locale LANG=en_US.UTF-8 || true
 sed -i 's/^#\\?PermitRootLogin .*/PermitRootLogin yes/' /etc/ssh/sshd_config
 sed -i 's/^#\\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
-systemctl enable --now ssh
-systemctl restart ssh
+systemctl enable ssh || true
+if grep -qx "systemd" /proc/1/comm 2>/dev/null; then
+  systemctl restart ssh || systemctl start ssh || true
+fi
 INCHROOT
 
   machinectl stop "$TMP" || true
+  rm -f "$TMP_DIR"
   rm -f "/etc/systemd/nspawn/${TMP}.nspawn"
   systemctl daemon-reload
 
@@ -246,8 +294,10 @@ EOF
   PID="$(machinectl show "$name" -p Leader --value)"
   nsenter -t "$PID" -m -u -i -n -p /bin/bash <<'INCHROOT'
 set -euo pipefail
-systemctl enable --now ssh
-systemctl restart ssh
+systemctl enable ssh || true
+if [[ "$(cat /proc/1/comm 2>/dev/null || true)" == "systemd" ]]; then
+  systemctl restart ssh || systemctl start ssh || true
+fi
 INCHROOT
 
 done < "$MACHINES_FILE"

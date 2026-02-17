@@ -146,6 +146,30 @@ sudo ./cleanup.sh
 
 ---
 
+## `reset_template.sh`
+
+Resets reusable template state only.
+
+Removes:
+
+* `/var/lib/machines/.template`
+* temporary template builder machine state (`template-build`)
+* `/etc/systemd/nspawn/template-build.nspawn`
+
+Usage:
+
+```bash
+sudo ./reset_template.sh
+```
+
+Then rebuild automatically on next create:
+
+```bash
+sudo ./create_machines.sh
+```
+
+---
+
 # Template System
 
 Path:
@@ -163,7 +187,7 @@ If `USE_TEMPLATE=1`:
 To rebuild template:
 
 ```bash
-sudo rm -rf /var/lib/machines/.template
+sudo ./reset_template.sh
 ```
 
 Then run:
@@ -217,7 +241,7 @@ Key is installed both:
 
 Includes:
 
-* Node.js (Ubuntu 24 native)
+* Node.js 22+ (preinstalled in template)
 * npm
 * build-essential
 * cmake
