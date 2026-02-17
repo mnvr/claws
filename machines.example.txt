@@ -1,0 +1,4 @@
+# Copy this file to machines.txt and replace keys before running create_machines.sh
+# Format: <name> <full-public-key-line>
+alice ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAEXAMPLEKEYFORALICE1234567890 alice@example
+bob ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAEXAMPLEKEYFORBOB1234567890123 bob@example

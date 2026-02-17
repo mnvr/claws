@@ -11,6 +11,20 @@ It is designed for:
 
 ---
 
+# Security Notice
+
+This project is for demo/lab use and is not production-hardened.
+
+Notable tradeoffs:
+
+* container root SSH is enabled (key-only)
+* network access is broad by default
+* host firewall/routing rules are minimal
+
+Use isolated environments and disposable hosts.
+
+---
+
 # Files
 
 ## `host_prep.sh`
@@ -79,6 +93,12 @@ Environment flags:
 ---
 
 ## `machines.txt`
+
+Create it from the template:
+
+```bash
+cp machines.example.txt machines.txt
+```
 
 Format:
 
