@@ -91,6 +91,88 @@ get_or_assign_last_octet() {
   echo "$next"
 }
 
+write_nspawn_config() {
+  local name="$1"
+  mkdir -p /etc/systemd/nspawn
+  cat > "/etc/systemd/nspawn/${name}.nspawn" <<EOF
+[Exec]
+Boot=yes
+PrivateUsers=no
+
+[Network]
+Bridge=${BR}
+EOF
+}
+
+write_machine_network_config() {
+  local name="$1"
+  local ip_addr="$2"
+
+  mkdir -p "/var/lib/machines/$name/etc"
+  cat > "/var/lib/machines/$name/etc/network/interfaces" <<EOF
+auto lo
+iface lo inet loopback
+
+auto host0
+iface host0 inet static
+    address ${ip_addr}
+    netmask 255.255.255.0
+    gateway ${GW_IP}
+EOF
+
+  cat > "/var/lib/machines/$name/etc/resolv.conf" <<EOF
+nameserver ${DNS1}
+nameserver ${DNS2}
+EOF
+}
+
+ensure_machine_started() {
+  local name="$1"
+  local state
+  state="$(machinectl show "$name" -p State --value 2>/dev/null || true)"
+  if [[ "$state" == "running" ]]; then
+    return 0
+  fi
+  machinectl start "$name"
+}
+
+wait_for_machine_leader() {
+  local name="$1"
+  local pid=""
+
+  for ((i = 0; i < 40; i++)); do
+    pid="$(machinectl show "$name" -p Leader --value 2>/dev/null || true)"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && ((pid > 1)) && [[ -d "/proc/$pid" ]]; then
+      echo "$pid"
+      return 0
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
+refresh_machine_ssh_service() {
+  local name="$1"
+  local pid
+
+  if ! pid="$(wait_for_machine_leader "$name")"; then
+    echo "Warning: $name did not expose a stable leader PID; skipping in-container ssh refresh."
+    return 0
+  fi
+
+  if ! nsenter -t "$pid" -m -u -i -n -p /bin/bash -lc '
+set -euo pipefail
+if [[ "$(cat /proc/1/comm 2>/dev/null || true)" == "systemd" ]]; then
+  systemctl restart ssh || systemctl start ssh || true
+fi
+if ! pgrep -x sshd >/dev/null 2>&1; then
+  /usr/sbin/sshd || true
+fi
+'; then
+    echo "Warning: ssh refresh step failed for $name; continuing."
+  fi
+}
+
 build_template_if_needed() {
   [[ "$USE_TEMPLATE" == "1" ]] || return 0
   [[ -d "$TEMPLATE" ]] && return 0
@@ -184,9 +266,11 @@ fi
 update-locale LANG=en_US.UTF-8 || true
 sed -i 's/^#\\?PermitRootLogin .*/PermitRootLogin yes/' /etc/ssh/sshd_config
 sed -i 's/^#\\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
-systemctl enable ssh || true
 if grep -qx "systemd" /proc/1/comm 2>/dev/null; then
   systemctl restart ssh || systemctl start ssh || true
+fi
+if ! pgrep -x sshd >/dev/null 2>&1; then
+  /usr/sbin/sshd || true
 fi
 INCHROOT
 
@@ -240,12 +324,21 @@ while IFS=$' \t' read -r name pubkey; do
   ip_addr="${BASE_IP_PREFIX}${last_octet}"
 
   if [[ -d "/var/lib/machines/$name" ]]; then
+    write_nspawn_config "$name"
+    write_machine_network_config "$name" "$ip_addr"
     mkdir -p "/var/lib/machines/$name/root/.ssh"
     touch "/var/lib/machines/$name/root/.ssh/authorized_keys"
     chmod 700 "/var/lib/machines/$name/root/.ssh"
     chmod 600 "/var/lib/machines/$name/root/.ssh/authorized_keys"
     dedupe_append_line "$pubkey" "/var/lib/machines/$name/root/.ssh/authorized_keys"
-    echo "Exists, updated keys: $name @ $ip_addr"
+    systemctl daemon-reload
+
+    if ensure_machine_started "$name"; then
+      refresh_machine_ssh_service "$name"
+      echo "Exists, updated keys and ensured running: $name @ $ip_addr"
+    else
+      echo "Warning: Exists, updated keys but failed to start: $name @ $ip_addr"
+    fi
     continue
   fi
 
@@ -254,31 +347,8 @@ while IFS=$' \t' read -r name pubkey; do
   mkdir -p "/var/lib/machines"
   copy_from_template_or_debootstrap "$name"
 
-  mkdir -p /etc/systemd/nspawn
-  cat > "/etc/systemd/nspawn/${name}.nspawn" <<EOF
-[Exec]
-Boot=yes
-PrivateUsers=no
-
-[Network]
-Bridge=${BR}
-EOF
-
-  cat > "/var/lib/machines/$name/etc/network/interfaces" <<EOF
-auto lo
-iface lo inet loopback
-
-auto host0
-iface host0 inet static
-    address ${ip_addr}
-    netmask 255.255.255.0
-    gateway ${GW_IP}
-EOF
-
-  cat > "/var/lib/machines/$name/etc/resolv.conf" <<EOF
-nameserver ${DNS1}
-nameserver ${DNS2}
-EOF
+  write_nspawn_config "$name"
+  write_machine_network_config "$name" "$ip_addr"
 
   # Ensure root authorized_keys exists in rootfs
   mkdir -p "/var/lib/machines/$name/root/.ssh"
@@ -289,16 +359,7 @@ EOF
 
   systemctl daemon-reload
   machinectl start "$name"
-
-  # If we used a template, packages/sshd are already installed/enabled; just restart ssh.
-  PID="$(machinectl show "$name" -p Leader --value)"
-  nsenter -t "$PID" -m -u -i -n -p /bin/bash <<'INCHROOT'
-set -euo pipefail
-systemctl enable ssh || true
-if [[ "$(cat /proc/1/comm 2>/dev/null || true)" == "systemd" ]]; then
-  systemctl restart ssh || systemctl start ssh || true
-fi
-INCHROOT
+  refresh_machine_ssh_service "$name"
 
 done < "$MACHINES_FILE"
 
