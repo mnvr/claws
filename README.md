@@ -279,6 +279,49 @@ curl -fsSL https://openclaw.ai/install.sh | bash
 
 ---
 
+# Troubleshooting
+
+## `create_machines.sh` shows `Too many open files`
+
+If you see:
+
+```text
+Failed to allocate directory watch: Too many open files
+```
+
+the host has likely hit inotify limits (not disk/RAM limits).
+
+Check current values:
+
+```bash
+sysctl fs.inotify.max_user_watches fs.inotify.max_user_instances fs.file-max
+```
+
+Raise immediately (until reboot):
+
+```bash
+sudo sysctl -w fs.inotify.max_user_watches=524288
+sudo sysctl -w fs.inotify.max_user_instances=2048
+```
+
+Persist across reboots:
+
+```bash
+cat <<'EOF' | sudo tee /etc/sysctl.d/99-claws-inotify.conf
+fs.inotify.max_user_watches=524288
+fs.inotify.max_user_instances=2048
+EOF
+sudo sysctl --system
+```
+
+Then rerun:
+
+```bash
+sudo ./create_machines.sh
+```
+
+---
+
 # Design Goals
 
 * Deterministic
