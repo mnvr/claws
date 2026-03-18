@@ -322,6 +322,30 @@ sudo ./create_machines.sh
 
 ---
 
+## Ubuntu host daily upgrades restart containers
+
+On Ubuntu hosts, unattended daily package maintenance can restart
+`systemd-nspawn` units during package upgrades.
+
+To disable the daily upgrade timers:
+
+```bash
+sudo systemctl disable --now apt-daily.timer apt-daily-upgrade.timer
+```
+
+Undo:
+
+```bash
+sudo systemctl enable --now apt-daily.timer apt-daily-upgrade.timer
+```
+
+Caveat:
+
+* this also stops automatic security updates on the host until you re-enable the
+  timers or patch manually
+
+---
+
 # Design Goals
 
 * Deterministic
